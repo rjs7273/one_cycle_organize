@@ -2,8 +2,15 @@ import pandas as pd
 import torch
 from transformers import AutoTokenizer, AutoModelForSequenceClassification
 
-# ✅ 종목명 설정
-stock_name = "삼성전자"  # ← 여기만 바꾸면 됩니다
+# ✅ 커맨드라인 인자 방식
+# 사용법 : python inference2.py --stock samsung
+import argparse
+
+parser = argparse.ArgumentParser()
+parser.add_argument("--stock", type=str, required=True)
+args = parser.parse_args()
+
+stock_name = args.stock
 
 # ✅ 경로 구성
 model_path = f"../_0_model/kcbert_3class_{stock_name}"
