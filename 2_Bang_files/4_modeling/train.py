@@ -41,11 +41,12 @@ def tokenize_function(example):
 # ✅ 6. 토큰화 적용
 tokenized_dataset = dataset.map(tokenize_function)
 
-# ✅ 7. 학습 설정
+# ✅ 7. 학습 설정 (저장 기능 포함)
 training_args = TrainingArguments(
-    output_dir="./kcbert_3class_test_model", # type: ignore
+    output_dir="../0_model/kcbert_3class_test_model",
     evaluation_strategy="epoch",
-    save_strategy="no",  # 테스트 목적 → 모델 저장 생략
+    save_strategy="epoch",  # ⬅️ 변경됨: 매 에폭마다 저장
+    save_total_limit=1,      # ⬅️ 가장 최근 모델 하나만 저장
     num_train_epochs=1,
     per_device_train_batch_size=16,
     per_device_eval_batch_size=16,
@@ -65,3 +66,8 @@ trainer = Trainer(
 
 # ✅ 9. 학습 시작
 trainer.train()
+
+# ✅ 10. 최종 모델 명시적으로 저장
+trainer.save_model("./kcbert_3class_test_model")
+tokenizer.save_pretrained("./kcbert_3class_test_model")
+print("✅ 모델 저장 완료: ./kcbert_3class_test_model")
