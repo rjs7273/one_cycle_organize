@@ -7,24 +7,33 @@ from transformers import (
 )
 from datasets import Dataset, DatasetDict
 
-# ✅ 커맨드라인 인자 방식
-# 사용법 : python train2.py --stock samsung
-import argparse
+# # ✅ 커맨드라인 인자 방식
+# # 사용법 : python train2.py --stock samsung
+# import argparse
 
-parser = argparse.ArgumentParser()
-parser.add_argument("--stock", type=str, required=True)
-args = parser.parse_args()
+# parser = argparse.ArgumentParser()
+# parser.add_argument("--stock", type=str, required=True)
+# args = parser.parse_args()
 
-stock_name = args.stock
+# stock_name = args.stock
+
+# # ✅ 변수 인자 방식
+# stock_list = ["samsung","skhynix","apple","nvidia"]
+
+stock_name = "apple"
 
 # ✅ 경로 구성
-train_path = f"../_0_data/_2_labeling/{stock_name}_train_3class.csv"
-valid_path = f"../_0_data/_2_labeling/{stock_name}_valid_3class.csv"
-output_dir = f"../_0_model/kcbert_3class_{stock_name}"
+train_path = f"_0_data/_2_labeling/{stock_name}_train_3class.csv"
+valid_path = f"_0_data/_2_labeling/{stock_name}_valid_3class.csv"
+output_dir = f"_0_model/kcbert_3class_{stock_name}"
 
 # ✅ 데이터 로드 및 샘플링 (파일 저장은 생략)
 train_df = pd.read_csv(train_path).sample(3000, random_state=42)
 valid_df = pd.read_csv(valid_path).sample(1000, random_state=42)
+
+# 결측치 제거
+train_df = train_df.dropna(subset=["text_bert"])
+valid_df = valid_df.dropna(subset=["text_bert"])
 
 # ✅ HuggingFace Dataset 변환
 dataset = DatasetDict({
@@ -39,7 +48,7 @@ model = AutoModelForSequenceClassification.from_pretrained(model_name, num_label
 
 # ✅ 토크나이징
 def tokenize_function(example):
-    return tokenizer(example["text"], padding="max_length", truncation=True, max_length=128)
+    return tokenizer(example["text_bert"], padding="max_length", truncation=True, max_length=128)
 
 tokenized_dataset = dataset.map(tokenize_function, batched=True)
 

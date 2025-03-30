@@ -2,6 +2,8 @@ import pandas as pd
 from sklearn.model_selection import train_test_split
 from common_labeling import label_dataframe
 
+# stock_list = ["samsung","skhynix","apple","nvidia"]
+
 stock_name = "apple"
 
 # 경로 설정

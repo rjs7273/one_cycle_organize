@@ -2,20 +2,25 @@ import pandas as pd
 import torch
 from transformers import AutoTokenizer, AutoModelForSequenceClassification
 
-# ✅ 커맨드라인 인자 방식
-# 사용법 : python inference2.py --stock samsung
-import argparse
+# # ✅ 커맨드라인 인자 방식
+# # 사용법 : python inference2.py --stock samsung
+# import argparse
 
-parser = argparse.ArgumentParser()
-parser.add_argument("--stock", type=str, required=True)
-args = parser.parse_args()
+# parser = argparse.ArgumentParser()
+# parser.add_argument("--stock", type=str, required=True)
+# args = parser.parse_args()
 
-stock_name = args.stock
+# stock_name = args.stock
+
+# ✅ 변수 인자 방식
+# stock_list = ["samsung","skhynix","apple","nvidia"]
+
+stock_name = "skhynix"
 
 # ✅ 경로 구성
-model_path = f"../_0_model/kcbert_3class_{stock_name}"
-input_path = f"../_0_data/_1_preprocess/{stock_name}_filtered.csv"
-output_path = f"../_0_data/_3_predict/{stock_name}_predict_bert.csv"
+model_path = f"_0_model/kcbert_3class_{stock_name}"
+input_path = f"_0_data/_1_preprocess/{stock_name}_filtered.csv"
+output_path = f"_0_data/_3_predict/{stock_name}_predict_bert.csv"
 
 # ✅ 모델 및 토크나이저 로드
 tokenizer = AutoTokenizer.from_pretrained(model_path)

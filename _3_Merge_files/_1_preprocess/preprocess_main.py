@@ -1,7 +1,9 @@
 import pandas as pd
 from common_preprocess import preprocess_comments
 
-stock_name = "skhynix"
+# stock_list = ["samsung","skhynix","apple","nvidia"]
+
+stock_name = "apple"
 
 # 경로 설정
 raw_path = f"_0_data/_0_raw/{stock_name}_comments.csv"
