@@ -35,4 +35,4 @@ if __name__ == "__main__":
 
     # 출력 폴더 생성 및 저장
     output_file.parent.mkdir(parents=True, exist_ok=True)
-    df.to_csv(output_file, index=False, encoding="utf-8-sig")
+    df.to_csv(output_file, index=False, encoding="utf-8")

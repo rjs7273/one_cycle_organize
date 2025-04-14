@@ -48,6 +48,7 @@ class SentimentDataset(Dataset):
         encoding = self.tokenizer(
             self.texts[idx],
             max_length=self.max_len,
+
             truncation=True,
             padding="max_length",
             return_tensors="pt"
@@ -117,6 +118,10 @@ def find_latest_model(model_dir):
                 latest_path = model_dir / fname
     return latest_path, latest_epoch
 
+# pseudo-label 저장 디렉토리 추가
+pseudo_dir = model_dir / f"_3_labeled/pseudo_batches_{stock_name}"
+pseudo_dir.mkdir(parents=True, exist_ok=True)
+
 # ================================
 # 6. 전체 프로세스 실행
 # ================================
@@ -125,16 +130,16 @@ def main():
     labeled_df = pd.read_csv(labeled_path)
     full_df = pd.read_csv(preprocessed_path)
 
-    if 'content' not in labeled_df.columns or 'content' not in full_df.columns:
-        raise ValueError("데이터에 'content' 컬럼이 없습니다.")
-
     labeled_df = labeled_df.dropna(subset=["content"])
     full_df = full_df.dropna(subset=["content"])
 
+    if 'content' not in labeled_df.columns or 'content' not in full_df.columns:
+        raise ValueError("데이터에 'content' 컬럼이 없습니다.")
+
     tokenizer = AutoTokenizer.from_pretrained("beomi/KcELECTRA-base")
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"현재 사용 중인 디바이스: {device}")
 
-    # 모델 로드 또는 초기화
     model = KcBERTSentiment()
     latest_model_path, latest_epoch = find_latest_model(model_dir)
 
@@ -146,57 +151,76 @@ def main():
         print("🚀 새 모델로 학습 시작합니다.")
 
     model = model.to(device)
+    print("🚀 디바이스 확인:", device)
+    print("📦 모델 위치:", next(model.parameters()).device)
 
-    # 초기 라벨 데이터셋
+
     labeled_texts = labeled_df["content"].tolist()
     labeled_labels = labeled_df[["fear_score", "neutral_score", "greed_score"]].values.tolist()
-    labeled_dataset = SentimentDataset(labeled_texts, labeled_labels, tokenizer)
-    labeled_loader = DataLoader(labeled_dataset, batch_size=32, shuffle=True)
+
+    pseudo_files = sorted(pseudo_dir.glob("pseudo_batch_*.csv"))
+    for file in pseudo_files:
+        df = pd.read_csv(file)
+        labeled_texts += df["text"].tolist()
+        labeled_labels += df[["fear", "neutral", "greed"]].values.tolist()
+
+    tokenizer = AutoTokenizer.from_pretrained("beomi/KcELECTRA-base")
     optimizer = AdamW(model.parameters(), lr=2e-5)
 
     for epoch in range(latest_epoch, 10):
         print(f"\n🌀 Epoch {epoch+1}")
+        batch_size = 512  # 또는 원하는 값으로 설정
+
+        # 1. 학습
+        labeled_dataset = SentimentDataset(labeled_texts, labeled_labels, tokenizer)
+        labeled_loader = DataLoader(labeled_dataset, batch_size=64, shuffle=True)
         loss = train(model, labeled_loader, optimizer, device)
         print(f"Train loss: {loss:.4f}")
 
-        # 모델 저장
+        # 2. 저장
         save_path = model_dir / f"kcbert_epoch{epoch+1}.pt"
         torch.save(model.state_dict(), save_path)
         print(f"📦 저장 완료: {save_path}")
 
-        # ---------- Pseudo-labeling ----------
+        # 3. 추론 + pseudo-label
         threshold = get_threshold(epoch)
         print(f"🔍 threshold = {threshold}")
         model.eval()
+        full_dataset = SentimentDataset(full_df["content"].tolist(), tokenizer=tokenizer)
+        full_loader = DataLoader(full_dataset, batch_size=512)
 
-        full_texts = full_df["content"].tolist()
-        full_dataset = SentimentDataset(full_texts, tokenizer=tokenizer)
-        full_loader = DataLoader(full_dataset, batch_size=64)
-
-        pseudo_texts, pseudo_labels = [], []
-        start = time.time()
+        batch_data = []
         with torch.no_grad():
             for batch in tqdm(full_loader, desc=" Inference", ncols=100):
                 input_ids = batch["input_ids"].to(device)
                 attention_mask = batch["attention_mask"].to(device)
                 outputs = model(input_ids, attention_mask)
                 confidences, _ = torch.max(outputs, dim=1)
-                mask = confidences > threshold
-                for i in range(len(mask)):
-                    if mask[i]:
-                        pseudo_texts.append(tokenizer.decode(batch["input_ids"][i], skip_special_tokens=True))
-                        pseudo_labels.append(outputs[i].cpu().numpy())
-        end = time.time()
-        print(f"\n✅ 전체 추론 완료 (총 시간: {end - start:.2f}초)")
 
-        if pseudo_labels:
-            print(f"  ✅ pseudo-labels accepted: {len(pseudo_labels)}")
-            labeled_texts += pseudo_texts
-            labeled_labels += pseudo_labels
-            labeled_dataset = SentimentDataset(labeled_texts, labeled_labels, tokenizer)
-            labeled_loader = DataLoader(labeled_dataset, batch_size=256, shuffle=True)
-        else:
-            print("  ⚠️ no pseudo-labels accepted")
+                for i in range(len(confidences)):
+                    if confidences[i] > threshold:
+                        text = tokenizer.decode(batch["input_ids"][i], skip_special_tokens=True)
+                        probs = outputs[i].cpu().numpy()
+                        batch_data.append({"text": text, "fear": probs[0], "neutral": probs[1], "greed": probs[2]})
+
+        # 4. 저장 (기존에 존재하지 않는 경우만)
+        while len(batch_data) >= batch_size:
+            save_idx = len(list(pseudo_dir.glob("pseudo_batch_*.csv")))
+            save_path = pseudo_dir / f"pseudo_batch_{save_idx}.csv"
+            if not save_path.exists():
+                df_batch = pd.DataFrame(batch_data[:batch_size])
+                df_batch.to_csv(save_path, index=False, encoding="utf-8")
+                print(f"✅ 저장됨: {save_path.name}")
+            batch_data = batch_data[batch_size:]
+
+        # 5. pseudo-label 데이터 통합
+        pseudo_files = sorted(pseudo_dir.glob("pseudo_batch_*.csv"))
+        labeled_texts = labeled_df["content"].tolist()
+        labeled_labels = labeled_df[["fear_score", "neutral_score", "greed_score"]].values.tolist()
+        for file in pseudo_files:
+            df = pd.read_csv(file)
+            labeled_texts += df["text"].tolist()
+            labeled_labels += df[["fear", "neutral", "greed"]].values.tolist()
 
 if __name__ == "__main__":
     main()

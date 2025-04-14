@@ -22,5 +22,5 @@ if __name__ == "__main__":
     sampled_df = df.sample(n=1000, random_state=42).reset_index(drop=True)
 
     # 저장
-    sampled_df.to_csv(output_path, index=False, encoding="utf-8-sig")
+    sampled_df.to_csv(output_path, index=False, encoding="utf-8")
     print(f"[✔] 샘플링 완료: {output_path}")

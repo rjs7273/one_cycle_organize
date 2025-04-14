@@ -106,7 +106,7 @@ for i, comment in enumerate(tqdm(df['Message'])):
     # 배치 단위로 저장
     if (i + 1) % batch_size == 0 or (i + 1) == len(df):
         df_batch = pd.DataFrame(batch_data)
-        df_batch.to_csv(batch_path, index=False, encoding="utf-8-sig")
+        df_batch.to_csv(batch_path, index=False, encoding="utf-8")
         print(f">>> 저장됨: {batch_path}")
         batch_data = []
 
@@ -117,5 +117,5 @@ merged_df = pd.concat([pd.read_csv(f) for f in partial_files], ignore_index=True
 
 # 최종 저장
 final_path = output_dir / f"{stock_name}_label.csv"
-merged_df.to_csv(final_path, index=False, encoding="utf-8-sig")
+merged_df.to_csv(final_path, index=False, encoding="utf-8")
 print(f"[✔] 최종 저장 완료: {final_path}")
