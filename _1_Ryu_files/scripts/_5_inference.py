@@ -1,18 +1,21 @@
 import torch
+import torch.nn as nn
 from torch.utils.data import Dataset, DataLoader
 import pandas as pd
 from transformers import AutoTokenizer, AutoModel
-import argparse
-import re
-import os
-from pathlib import Path
 from tqdm import tqdm
+from pathlib import Path
+import argparse
+import os
+import re
+import numpy as np
+import copy
 
 # ================================
-# argparse: 종목명 인자 처리
+# argparse
 # ================================
-parser = argparse.ArgumentParser(description="KcBERT 감정 예측")
-parser.add_argument("--stock_name", type=str, default="samsung", help="종목명 (예: samsung, apple 등)")
+parser = argparse.ArgumentParser(description="KcBERT 감정 분류 모델 추론")
+parser.add_argument("--stock_name", type=str, default="samsung", help="종목명")
 args = parser.parse_args()
 stock_name = args.stock_name.lower()
 
@@ -22,12 +25,19 @@ stock_name = args.stock_name.lower()
 base_dir = Path(__file__).resolve().parent
 data_dir = base_dir / "../data"
 model_dir = base_dir / "../model"
+output_dir = base_dir / "../_4_predicted"
+output_dir.mkdir(parents=True, exist_ok=True)
 
 preprocessed_path = data_dir / f"_1_preprocessed/{stock_name}_preprocessed.csv"
-output_path = data_dir / f"_4_predicted/{stock_name}_predicted.csv"
+out_path = output_dir / f"{stock_name}_predicted.csv"
 
 # ================================
-# 데이터셋 클래스
+# 하이퍼파라미터
+# ================================
+INFER_BATCH_SIZE = 1024
+
+# ================================
+# 데이터셋 정의
 # ================================
 class SentimentDataset(Dataset):
     def __init__(self, texts, tokenizer, max_len=128):
@@ -39,25 +49,28 @@ class SentimentDataset(Dataset):
         return len(self.texts)
 
     def __getitem__(self, idx):
+        raw_text = self.texts[idx]
         encoding = self.tokenizer(
-            self.texts[idx],
+            raw_text,
             max_length=self.max_len,
             truncation=True,
             padding="max_length",
             return_tensors="pt"
         )
-        return {key: val.squeeze(0) for key, val in encoding.items()}
+        item = {key: val.squeeze(0) for key, val in encoding.items()}
+        item["raw_text"] = raw_text
+        return item
 
 # ================================
-# 모델 클래스
+# 모델 정의
 # ================================
-class KcBERTSentiment(torch.nn.Module):
+class KcBERTSentiment(nn.Module):
     def __init__(self):
         super().__init__()
-        self.bert = AutoModel.from_pretrained("beomi/kcBERT-base")
-        self.dropout = torch.nn.Dropout(0.1)
-        self.linear = torch.nn.Linear(self.bert.config.hidden_size, 3)
-        self.softmax = torch.nn.Softmax(dim=1)
+        self.bert = AutoModel.from_pretrained("beomi/kcbert-base")
+        self.dropout = nn.Dropout(0.1)
+        self.linear = nn.Linear(self.bert.config.hidden_size, 3)
+        self.softmax = nn.Softmax(dim=1)
 
     def forward(self, input_ids, attention_mask):
         outputs = self.bert(input_ids=input_ids, attention_mask=attention_mask).last_hidden_state
@@ -73,74 +86,55 @@ def find_latest_model(model_dir):
     pattern = re.compile(rf"kcbert_epoch_{stock_name}_(\d+)\.pt")
     latest_epoch = -1
     latest_path = None
-    for fname in os.listdir(model_dir):
-        match = pattern.match(fname)
+    for path in Path(model_dir).glob(f"kcbert_epoch_{stock_name}_*.pt"):
+        match = pattern.match(path.name)
         if match:
             epoch = int(match.group(1))
             if epoch > latest_epoch:
                 latest_epoch = epoch
-                latest_path = model_dir / fname
-    return latest_path
+                latest_path = path
+    return latest_path, latest_epoch
 
 # ================================
-# 추론 실행
+# 추론 함수
 # ================================
-def main():
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    tokenizer = AutoTokenizer.from_pretrained("beomi/kcBERT-base")
-
-    model = KcBERTSentiment()
-    model = model.to(device)  # .half() 제거
-    model.eval()
-
-    latest_model = find_latest_model(model_dir)
-    if latest_model is None:
-        raise FileNotFoundError("모델이 존재하지 않습니다.")
-    model.load_state_dict(torch.load(latest_model, map_location=device))
-    print(f"✅ 모델 로드: {latest_model}")
-
-    # 데이터 로드 및 정제
+def run_inference():
     df = pd.read_csv(preprocessed_path)
     df = df.dropna(subset=["Message"])
-    df = df[df["Message"].apply(lambda x: isinstance(x, str) and x.strip() != "")]
-    df = df[df["Message"].apply(lambda x: len(x.strip()) >= 3)]
-    print(f"✅ 입력 데이터 개수 (정제 후): {len(df)}")
-
-    if len(df) == 0:
-        print("⚠️ 예측할 데이터가 없습니다. 입력 파일을 확인하세요.")
-        return
-
     texts = df["Message"].tolist()
+
+    tokenizer = AutoTokenizer.from_pretrained("beomi/kcbert-base")
     dataset = SentimentDataset(texts, tokenizer)
-    loader = DataLoader(dataset, batch_size=1024)
+    dataloader = DataLoader(dataset, batch_size=INFER_BATCH_SIZE)
 
-    # 추론
-    model.eval()
-    all_probs = []
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model = KcBERTSentiment().to(device)
+
+    model_path, epoch = find_latest_model(model_dir)
+    if model_path is None:
+        raise ValueError("모델 파일이 존재하지 않습니다.")
+
+    model.load_state_dict(torch.load(model_path, map_location=device))
+    model = copy.deepcopy(model).half().eval()  # ✅ AMP용 half 모델 복사
+
+    results = []
     with torch.no_grad():
-        for batch in tqdm(loader, desc="추론 중", ncols=100):
+        for batch in tqdm(dataloader, desc="Inference", ncols=100):
             input_ids = batch["input_ids"].to(device)
-            attention_mask = batch["attention_mask"].to(device)
-            outputs = model(input_ids, attention_mask)
+            attention_mask = batch["attention_mask"].to(device).half()
+            probs = model(input_ids, attention_mask)
+            probs = probs.cpu().numpy()
+            for i, p in enumerate(probs):
+                results.append({
+                    "text": batch["raw_text"][i],
+                    "fear": p[0],
+                    "neutral": p[1],
+                    "greed": p[2]
+                })
 
-            if torch.isnan(outputs).any():
-                print("⚠️ 예측 결과에 NaN이 포함되어 있습니다. 해당 배치는 건너뜁니다.")
-                continue
-
-            all_probs.extend(outputs.cpu().tolist())
-
-    if not all_probs:
-        print("⚠️ 예측 결과가 비어 있습니다. 모델 또는 입력을 확인하세요.")
-        return
-
-    # 결과 저장
-    probs_array = torch.tensor(all_probs).numpy()
-    df = df.iloc[:len(probs_array)]  # 길이 맞춰 자르기
-    df["fear_score"] = probs_array[:, 0]
-    df["neutral_score"] = probs_array[:, 1]
-    df["greed_score"] = probs_array[:, 2]
-    df.to_csv(output_path, index=False, encoding="utf-8-sig")
-    print(f"📁 추론 결과 저장 완료: {output_path}")
+    result_df = pd.DataFrame(results)
+    result_df.to_csv(out_path, index=False, encoding="utf-8-sig")
+    print(f"✅ 추론 결과 저장 완료: {out_path}")
 
 if __name__ == "__main__":
-    main()
+    run_inference()
