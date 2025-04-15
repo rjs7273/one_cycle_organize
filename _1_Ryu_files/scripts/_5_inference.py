@@ -136,5 +136,7 @@ def run_inference():
     result_df.to_csv(out_path, index=False, encoding="utf-8-sig")
     print(f"✅ 추론 결과 저장 완료: {out_path}")
 
+
+
 if __name__ == "__main__":
     run_inference()
