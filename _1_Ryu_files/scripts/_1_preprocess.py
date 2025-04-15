@@ -14,6 +14,11 @@ def normalize_text(text: str) -> str:
     text = emoji.replace_emoji(text, replace='')  # 이모지 제거
     text = re.sub(r'[^가-힣a-zA-Z0-9\s]', '', text)  # 특수문자 제거
     text = re.sub(r'(.)\1{2,}', r'\1\1', text)  # 반복 문자 축소
+    # https, http, www 포함 문자열 제거
+    text = re.sub(r"https?:\/\/\S+", "", text)
+    text = re.sub(r"www\.\S+", "", text)
+    text = re.sub(r"https\S+", "", text)
+    text = re.sub(r"http\S+", "", text)
     return text.strip()
 
 if __name__ == "__main__":
@@ -30,8 +35,10 @@ if __name__ == "__main__":
     output_file = base_dir / f"../data/_1_preprocessed/{stock_name}_preprocessed.csv"
 
     # 데이터 로드 및 전처리
-    df = pd.read_csv(raw_file)[["Comment ID", "Message", "Updated At", "Stock Name"]]
+    df = pd.read_csv(raw_file)[["Comment ID","Message", "Updated At", "Stock Name"]]
     df["Message"] = df["Message"].astype(str).apply(normalize_text)
+    df = df.dropna(subset=["Message"]) # 이 부분 추가함
+
 
     # 출력 폴더 생성 및 저장
     output_file.parent.mkdir(parents=True, exist_ok=True)
