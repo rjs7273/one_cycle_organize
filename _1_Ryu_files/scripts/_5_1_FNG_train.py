@@ -28,6 +28,7 @@ stock_name = args.stock_name.lower()
 TRAIN_BATCH_SIZE = 64
 INFER_BATCH_SIZE = 1024
 PSEUDO_SAVE_BATCH = 1024
+IRRELEVANT_SCORE_THRESHOLD = 1.1 # 모든 댓글 필터링 안함
 
 # ================================
 # 경로 설정
@@ -37,7 +38,8 @@ data_dir = base_dir / "../data"
 model_dir = base_dir / "../FNG_model"
 model_dir.mkdir(parents=True, exist_ok=True)
 
-preprocessed_path = data_dir / f"_1_preprocessed/{stock_name}_preprocessed.csv"
+
+preprocessed_path = data_dir / f"_4_predicted/{stock_name}_rel_predicted.csv"
 labeled_path = data_dir / f"_3_labeled/{stock_name}_label.csv"
 pseudo_dir = model_dir / f"pseudo_batches_{stock_name}"
 pseudo_dir.mkdir(parents=True, exist_ok=True)
@@ -176,6 +178,18 @@ def find_latest_model(model_dir):
 def main():
     labeled_df = pd.read_csv(labeled_path)
     full_df = pd.read_csv(preprocessed_path)
+
+    # ✅ irrelevant_score ≥ IRRELEVANT_SCORE_THRESHOLD인 행 제거
+    if "irrelevant_score" in labeled_df.columns:
+        before = len(labeled_df)
+        labeled_df = labeled_df[labeled_df["irrelevant_score"] < IRRELEVANT_SCORE_THRESHOLD]
+        print(f"🧹 labeled_df: {before - len(labeled_df)}건 제거됨 (irrelevant_score ≥ {IRRELEVANT_SCORE_THRESHOLD})")
+
+    if "irrelevant_score" in full_df.columns:
+        before = len(full_df)
+        full_df = full_df[full_df["irrelevant_score"] < IRRELEVANT_SCORE_THRESHOLD]
+        print(f"🧹 full_df: {before - len(full_df)}건 제거됨 (irrelevant_score ≥ {IRRELEVANT_SCORE_THRESHOLD})")
+
 
     labeled_df = labeled_df.dropna(subset=["Message"])
     full_df = full_df.dropna(subset=["Message"])

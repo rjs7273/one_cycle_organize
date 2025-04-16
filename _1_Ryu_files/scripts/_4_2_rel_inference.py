@@ -125,8 +125,8 @@ def run_inference():
             scores = outputs.cpu().numpy()
             for i, score in enumerate(scores):
                 results.append({
-                    "text": batch["raw_text"][i],
-                    "reletive_score": float(score)
+                    "Message": batch["raw_text"][i],
+                    "irrelevant_score": float(score)
                 })
 
     result_df = pd.DataFrame(results)

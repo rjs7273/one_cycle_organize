@@ -89,7 +89,7 @@ class KcBERTSentiment(nn.Module):
 # Threshold 스케줄
 # ================================
 def get_threshold(epoch):
-    return [1.0, 0.9, 0.7, 0.6, 0.5][min(epoch, 4)]
+    return [0.2, 0.3, 0.4, 0.6, 0.8, 1.0][min(epoch, 5)]  # ✅ 수정됨
 
 # ================================
 # 학습 함수
@@ -121,7 +121,7 @@ def train(model, dataloader, optimizer, device):
     return total_loss / len(dataloader)
 
 # ================================
-# 추론 함수 (model deepcopy + half 적용)
+# 추론 함수 (threshold보다 낮은 점수만 저장)
 # ================================
 def inference(model, tokenizer, dataset, threshold, device, batch_size=INFER_BATCH_SIZE):
     dataloader = DataLoader(
@@ -140,11 +140,11 @@ def inference(model, tokenizer, dataset, threshold, device, batch_size=INFER_BAT
             outputs = model_fp16(input_ids, attention_mask)
 
             for i, score in enumerate(outputs):
-                if score > threshold:
+                if score < threshold:  # ✅ 기준: threshold보다 낮은 점수만 저장
                     text = tokenizer.decode(batch["input_ids"][i].cpu().tolist(), skip_special_tokens=True)
                     confident_data.append({
                         "text": text,
-                        "reletive_score": float(score.cpu().item())
+                        "irrelevant_score": float(score.cpu().item())
                     })
     return confident_data
 
@@ -171,7 +171,7 @@ def main():
     labeled_df = pd.read_csv(labeled_path)
     full_df = pd.read_csv(preprocessed_path)
 
-    labeled_df = labeled_df.dropna(subset=["Message", "reletive_score"])
+    labeled_df = labeled_df.dropna(subset=["Message", "irrelevant_score"])
     full_df = full_df.dropna(subset=["Message"])
 
     tokenizer = AutoTokenizer.from_pretrained("beomi/kcbert-base")
@@ -189,14 +189,14 @@ def main():
         print("🚀 새 모델로 학습 시작합니다.")
 
     labeled_texts = labeled_df["Message"].tolist()
-    labeled_labels = labeled_df["reletive_score"].tolist()
+    labeled_labels = labeled_df["irrelevant_score"].tolist()
 
     pseudo_files = sorted(pseudo_dir.glob("pseudo_batch_*.csv"))
     for file in pseudo_files:
         df = pd.read_csv(file)
-        df = df.dropna(subset=["text", "reletive_score"])
+        df = df.dropna(subset=["text", "irrelevant_score"])
         labeled_texts += df["text"].tolist()
-        labeled_labels += df["reletive_score"].tolist()
+        labeled_labels += df["irrelevant_score"].tolist()
 
     optimizer = AdamW(model.parameters(), lr=2e-5)
 
@@ -234,11 +234,11 @@ def main():
 
         pseudo_files = sorted(pseudo_dir.glob("pseudo_batch_*.csv"))
         labeled_texts = labeled_df["Message"].tolist()
-        labeled_labels = labeled_df["reletive_score"].tolist()
+        labeled_labels = labeled_df["irrelevant_score"].tolist()
         for file in pseudo_files:
             df = pd.read_csv(file)
             labeled_texts += df["text"].tolist()
-            labeled_labels += df["reletive_score"].tolist()
+            labeled_labels += df["irrelevant_score"].tolist()
 
         cleaned = [
             (text, label)

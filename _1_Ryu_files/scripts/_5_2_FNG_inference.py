@@ -27,13 +27,14 @@ data_dir = base_dir / "../data"
 model_dir = base_dir / "../FNG_model"
 model_dir.mkdir(parents=True, exist_ok=True)
 
-preprocessed_path = data_dir / f"_1_preprocessed/{stock_name}_preprocessed.csv"
+preprocessed_path = data_dir / f"_4_predicted/{stock_name}_rel_predicted.csv"
 out_path = data_dir / f"_4_predicted/{stock_name}_FNG_predicted.csv"
 
 # ================================
 # 하이퍼파라미터
 # ================================
 INFER_BATCH_SIZE = 1024
+IRRELEVANT_SCORE_THRESHOLD = 1.1  # 일단 모든 댓글 수용
 
 # ================================
 # 데이터셋 정의
@@ -68,7 +69,7 @@ class KcBERTSentiment(nn.Module):
         super().__init__()
         self.bert = AutoModel.from_pretrained("beomi/kcbert-base")
         self.dropout = nn.Dropout(0.1)
-        self.linear = nn.Linear(self.bert.config.hidden_size, 2)  # ✅ 3 → 2
+        self.linear = nn.Linear(self.bert.config.hidden_size, 2)
         self.softmax = nn.Softmax(dim=1)
 
     def forward(self, input_ids, attention_mask):
@@ -99,8 +100,15 @@ def find_latest_model(model_dir):
 # ================================
 def run_inference():
     df = pd.read_csv(preprocessed_path)
+
+    if "irrelevant_score" in df.columns:
+        before = len(df)
+        df = df[df["irrelevant_score"] < IRRELEVANT_SCORE_THRESHOLD]
+        print(f"🧹 무관한 댓글 {before - len(df)}건 제거됨 (irrelevant_score ≥ {IRRELEVANT_SCORE_THRESHOLD})")
+
     df = df.dropna(subset=["Message"])
     texts = df["Message"].tolist()
+    irrelevant_scores = df["irrelevant_score"].tolist()  # ✅ 추가
 
     tokenizer = AutoTokenizer.from_pretrained("beomi/kcbert-base")
     dataset = SentimentDataset(texts, tokenizer)
@@ -118,6 +126,7 @@ def run_inference():
 
     results = []
     with torch.no_grad():
+        idx = 0
         for batch in tqdm(dataloader, desc="Inference", ncols=100):
             input_ids = batch["input_ids"].to(device)
             attention_mask = batch["attention_mask"].to(device).half()
@@ -127,8 +136,10 @@ def run_inference():
                 results.append({
                     "text": batch["raw_text"][i],
                     "fear": p[0],
-                    "greed": p[1]
+                    "greed": p[1],
+                    "irrelevant_score": irrelevant_scores[idx]  # ✅ 추가
                 })
+                idx += 1
 
     result_df = pd.DataFrame(results)
     result_df.to_csv(out_path, index=False, encoding="utf-8-sig")
