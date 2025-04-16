@@ -2,4 +2,5 @@ _2_Bang_files/_0_model/
 _3_Merge_files/_0_model/
 .env
 venv
-_1_Ryu_files/model/
+_1_Ryu_files/FNG_model/
+_1_Ryu_files/rel_model/

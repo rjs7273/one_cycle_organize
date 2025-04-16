@@ -24,12 +24,11 @@ stock_name = args.stock_name.lower()
 # ================================
 base_dir = Path(__file__).resolve().parent
 data_dir = base_dir / "../data"
-model_dir = base_dir / "../model"
-output_dir = base_dir / "../_4_predicted"
-output_dir.mkdir(parents=True, exist_ok=True)
+model_dir = base_dir / "../FNG_model"
+model_dir.mkdir(parents=True, exist_ok=True)
 
 preprocessed_path = data_dir / f"_1_preprocessed/{stock_name}_preprocessed.csv"
-out_path = output_dir / f"{stock_name}_predicted.csv"
+out_path = data_dir / f"_4_predicted/{stock_name}_FNG_predicted.csv"
 
 # ================================
 # 하이퍼파라미터
@@ -62,14 +61,14 @@ class SentimentDataset(Dataset):
         return item
 
 # ================================
-# 모델 정의
+# 모델 정의 (2클래스)
 # ================================
 class KcBERTSentiment(nn.Module):
     def __init__(self):
         super().__init__()
         self.bert = AutoModel.from_pretrained("beomi/kcbert-base")
         self.dropout = nn.Dropout(0.1)
-        self.linear = nn.Linear(self.bert.config.hidden_size, 3)
+        self.linear = nn.Linear(self.bert.config.hidden_size, 2)  # ✅ 3 → 2
         self.softmax = nn.Softmax(dim=1)
 
     def forward(self, input_ids, attention_mask):
@@ -115,7 +114,7 @@ def run_inference():
         raise ValueError("모델 파일이 존재하지 않습니다.")
 
     model.load_state_dict(torch.load(model_path, map_location=device))
-    model = copy.deepcopy(model).half().eval()  # ✅ AMP용 half 모델 복사
+    model = copy.deepcopy(model).half().eval()
 
     results = []
     with torch.no_grad():
@@ -128,15 +127,12 @@ def run_inference():
                 results.append({
                     "text": batch["raw_text"][i],
                     "fear": p[0],
-                    "neutral": p[1],
-                    "greed": p[2]
+                    "greed": p[1]
                 })
 
     result_df = pd.DataFrame(results)
     result_df.to_csv(out_path, index=False, encoding="utf-8-sig")
     print(f"✅ 추론 결과 저장 완료: {out_path}")
-
-
 
 if __name__ == "__main__":
     run_inference()

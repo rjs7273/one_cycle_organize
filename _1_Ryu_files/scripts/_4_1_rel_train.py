@@ -11,7 +11,6 @@ import os
 import re
 from pathlib import Path
 import argparse
-import time
 import copy
 
 # ================================
@@ -34,7 +33,7 @@ PSEUDO_SAVE_BATCH = 1024
 # ================================
 base_dir = Path(__file__).resolve().parent
 data_dir = base_dir / "../data"
-model_dir = base_dir / "../model"
+model_dir = base_dir / "../rel_model"
 model_dir.mkdir(parents=True, exist_ok=True)
 
 preprocessed_path = data_dir / f"_1_preprocessed/{stock_name}_preprocessed.csv"
@@ -66,7 +65,7 @@ class SentimentDataset(Dataset):
         )
         item = {key: val.squeeze(0) for key, val in encoding.items()}
         if self.labels is not None:
-            item["labels"] = torch.tensor(self.labels[idx], dtype=torch.float)
+            item["labels"] = torch.tensor(self.labels[idx], dtype=torch.float).unsqueeze(0)
         return item
 
 # ================================
@@ -77,15 +76,14 @@ class KcBERTSentiment(nn.Module):
         super().__init__()
         self.bert = AutoModel.from_pretrained("beomi/kcbert-base")
         self.dropout = nn.Dropout(0.1)
-        self.linear = nn.Linear(self.bert.config.hidden_size, 3)
-        self.softmax = nn.Softmax(dim=1)
+        self.linear = nn.Linear(self.bert.config.hidden_size, 1)
+        self.activation = nn.Sigmoid()
 
     def forward(self, input_ids, attention_mask):
         outputs = self.bert(input_ids=input_ids, attention_mask=attention_mask).last_hidden_state
         pooled = outputs[:, 0]
         logits = self.linear(self.dropout(pooled))
-        probs = self.softmax(logits)
-        return probs
+        return self.activation(logits).squeeze(-1)
 
 # ================================
 # Threshold 스케줄
@@ -106,7 +104,7 @@ def train(model, dataloader, optimizer, device):
     for batch in tqdm(dataloader, desc="Training", ncols=100, leave=True):
         input_ids = batch["input_ids"].to(device)
         attention_mask = batch["attention_mask"].to(device)
-        labels = batch["labels"].to(device)
+        labels = batch["labels"].squeeze(1).to(device)
 
         optimizer.zero_grad()
 
@@ -134,23 +132,19 @@ def inference(model, tokenizer, dataset, threshold, device, batch_size=INFER_BAT
         persistent_workers=True
     )
     confident_data = []
-    model_fp16 = copy.deepcopy(model).half().eval()  # ✅ 복제 후 half
+    model_fp16 = copy.deepcopy(model).half().eval()
     with torch.no_grad():
         for batch in tqdm(dataloader, desc=" Inference", ncols=100):
             input_ids = batch["input_ids"].to(device)
             attention_mask = batch["attention_mask"].to(device).half()
             outputs = model_fp16(input_ids, attention_mask)
-            confidences, _ = torch.max(outputs, dim=1)
-            for i in range(len(confidences)):
-                if confidences[i] > threshold:
-                    input_ids_list = batch["input_ids"][i].cpu().tolist()
-                    text = tokenizer.decode(input_ids_list, skip_special_tokens=True)
-                    probs = outputs[i].cpu().numpy()
+
+            for i, score in enumerate(outputs):
+                if score > threshold:
+                    text = tokenizer.decode(batch["input_ids"][i].cpu().tolist(), skip_special_tokens=True)
                     confident_data.append({
                         "text": text,
-                        "fear": probs[0],
-                        "neutral": probs[1],
-                        "greed": probs[2]
+                        "reletive_score": float(score.cpu().item())
                     })
     return confident_data
 
@@ -170,7 +164,6 @@ def find_latest_model(model_dir):
                 latest_path = path
     return latest_path, latest_epoch
 
-
 # ================================
 # 전체 파이프라인 실행
 # ================================
@@ -178,7 +171,7 @@ def main():
     labeled_df = pd.read_csv(labeled_path)
     full_df = pd.read_csv(preprocessed_path)
 
-    labeled_df = labeled_df.dropna(subset=["Message"])
+    labeled_df = labeled_df.dropna(subset=["Message", "reletive_score"])
     full_df = full_df.dropna(subset=["Message"])
 
     tokenizer = AutoTokenizer.from_pretrained("beomi/kcbert-base")
@@ -196,14 +189,14 @@ def main():
         print("🚀 새 모델로 학습 시작합니다.")
 
     labeled_texts = labeled_df["Message"].tolist()
-    labeled_labels = labeled_df[["fear_score", "neutral_score", "greed_score"]].values.tolist()
+    labeled_labels = labeled_df["reletive_score"].tolist()
 
     pseudo_files = sorted(pseudo_dir.glob("pseudo_batch_*.csv"))
     for file in pseudo_files:
         df = pd.read_csv(file)
-        df = df.dropna(subset=["text", "fear", "neutral", "greed"])
+        df = df.dropna(subset=["text", "reletive_score"])
         labeled_texts += df["text"].tolist()
-        labeled_labels += df[["fear", "neutral", "greed"]].values.tolist()
+        labeled_labels += df["reletive_score"].tolist()
 
     optimizer = AdamW(model.parameters(), lr=2e-5)
 
@@ -222,7 +215,7 @@ def main():
         print(f"Train loss: {loss:.4f}")
 
         save_path = model_dir / f"kcbert_epoch_{stock_name}_{epoch+1}.pt"
-        torch.save(model.state_dict(), save_path)  # float 상태로 저장
+        torch.save(model.state_dict(), save_path)
         print(f"📦 저장 완료: {save_path}")
 
         threshold = get_threshold(epoch)
@@ -241,21 +234,19 @@ def main():
 
         pseudo_files = sorted(pseudo_dir.glob("pseudo_batch_*.csv"))
         labeled_texts = labeled_df["Message"].tolist()
-        labeled_labels = labeled_df[["fear_score", "neutral_score", "greed_score"]].values.tolist()
+        labeled_labels = labeled_df["reletive_score"].tolist()
         for file in pseudo_files:
             df = pd.read_csv(file)
             labeled_texts += df["text"].tolist()
-            labeled_labels += df[["fear", "neutral", "greed"]].values.tolist()
+            labeled_labels += df["reletive_score"].tolist()
 
         cleaned = [
             (text, label)
             for text, label in zip(labeled_texts, labeled_labels)
-            if isinstance(text, str) and text.strip() != "" and not any(pd.isna(label))
+            if isinstance(text, str) and text.strip() != "" and not pd.isna(label)
         ]
         labeled_texts = [x[0] for x in cleaned]
         labeled_labels = [x[1] for x in cleaned]
-
-
 
 if __name__ == "__main__":
     main()
