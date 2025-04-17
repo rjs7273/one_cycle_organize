@@ -1,60 +1,125 @@
+"""
+sampling_{}.csv 파일을 불러와
+OpenAI에게 레이블링을 지시하고
+sample_with_label_{}.csv 파일로 저장하는 코드
+"""
+from openai import OpenAI
 import pandas as pd
+import json
+from tqdm import tqdm
+from pathlib import Path
+import argparse
+import os
+from dotenv import load_dotenv
 import re
 
-from sklearn.model_selection import train_test_split
+# ✅ 1. API 키 불러오기
+load_dotenv()
+api_key = os.getenv("OPENAI_API_KEY")
+client = OpenAI(api_key=api_key)
 
-# ✅ 1. 전처리된 댓글 데이터 로드
-filtered_df = pd.read_csv('../0_data/1_preprocess/삼성전자_filtered.csv')
-texts = filtered_df['text'].fillna('')
+# ✅ 2. 종목명 인자 처리
+parser = argparse.ArgumentParser(description="OpenAI 기반 감정 레이블링")
+parser.add_argument("--stock_name", type=str, default="samsung", help="종목명 (예: apple, samsung 등)")
+args = parser.parse_args()
+stock_name = args.stock_name.lower()
 
-# ✅ 2. 감정 키워드 불러오기
-with open('../0_data/0_raw/fear_keywords.txt', 'r', encoding='utf-8') as f:
-    fear_keywords = set(line.strip() for line in f if line.strip())
+# ✅ 3. 파일 경로 설정
+base_dir = Path(__file__).resolve().parent
+input_path = base_dir / f"../data/_2_sampled/{stock_name}_10000_sample.csv"
+output_dir = base_dir / "../data/_3_labeled/10000"
+backup_dir = output_dir / "backup"
+backup_dir.mkdir(parents=True, exist_ok=True)
 
-with open('../0_data/0_raw/greed_keywords.txt', 'r', encoding='utf-8') as f:
-    greed_keywords = set(line.strip() for line in f if line.strip())
+# ✅ 4. 데이터 불러오기
+df = pd.read_csv(input_path)
 
-# ✅ 3. 텍스트 정제 함수
-def clean_text_for_labeling(text):
-    return re.sub(r"[^\uAC00-\uD7A3a-zA-Z0-9\s]", " ", str(text)).lower()
+# ✅ 5. 최적 프롬프트
+short_prompt = """
+주식 커뮤니티 댓글을 감정 분석하라.
 
-# ✅ 4. 약한 라벨링 함수 (공포=0, 중립=1, 탐욕=2)
-def weak_label_by_count(text):
-    text_clean = clean_text_for_labeling(text)
-    fear_count = sum(keyword in text_clean for keyword in fear_keywords)
-    greed_count = sum(keyword in text_clean for keyword in greed_keywords)
+1. 문장이 투자 심리 분석에 적절한지 판단하라.
+   - 투자 심리와 관련된 감정(불안, 기대 등)이 명확하다면, irrelevant_score는 낮고 fear_score 또는 greed_score 중 하나가 높아야 한다.
+   - 분석 가능성은 binary가 아니라 irrelevant_score (0.0 ~ 1.0) 으로 표현하라.
 
-    if fear_count > greed_count:
-        return 0  # 공포
-    elif greed_count > fear_count:
-        return 2  # 탐욕
-    elif fear_count == greed_count and fear_count > 0:
-        return 1  # 중립
-    else:
-        return 1  # 중립
+2. irrelevant_score가 높아도 fear_score와 greed_score를 0~1 사이 소수점 둘째 자리까지 부여하라.
+   - 두 점수의 합은 반드시 1이 되어야하며 감정 강도에 따라 다양한 분포(예: 0.62 / 0.38, 0.51 / 0.49 등)로 표현한다.
+   - 각 점수는 0.05 단위에 제한되지 말고 자유롭게 부여하라.
 
-# ✅ 5. 약한 라벨링 적용
-filtered_df['label'] = texts.apply(weak_label_by_count)
+3. 중립 여부는 이 단계에서 판단하지 않는다. 후처리에서 fear/greed 점수를 기준으로 판별할 것이다.
 
-# ✅ 6. 라벨 분포 확인
-print("✅ 전체 라벨 분포 (0=공포, 1=중립, 2=탐욕):")
-print(filtered_df['label'].value_counts().sort_index())
+[감정 정의 - 투자 심리 기준]
+- 공포(fear): 손실, 하락에 대한 불안, 체념, 후회, 분노, 시장 불신, 투자 포기 또는 관망 심리 등
+- 탐욕(greed): 급등 기대, 과도한 낙관, 흥분, 공격적 매수 심리, 무리한 확신 등 (“가즈아”, “떡상” 같은 표현이 해당됨)
 
-# ✅ 7. 텍스트와 라벨만 추출
-train_data = filtered_df[["text", "label"]].copy()
+출력은 반드시 다음 JSON 형식으로, 모든 key를 누락 없이 포함하라.  
+{
+  "irrelevant_score": float, "fear_score": float, "greed_score": float}
 
-# ✅ 8. stratify로 클래스 비율 유지하며 분할
-train_df, valid_df = train_test_split(
-    train_data,
-    test_size=0.2,
-    stratify=train_data["label"],
-    random_state=42
-)
+문장:
+"{comment}"
+"""
 
-# ✅ 9. 저장
-train_df.to_csv("../0_data/2_labeling/삼성전자_train_3class.csv", index=False)
-valid_df.to_csv("../0_data/2_labeling/삼성전자_valid_3class.csv", index=False)
+# ✅ 6. GPT 호출 함수
+def get_emotion_scores(comment):
+    prompt = short_prompt.replace("{comment}", comment)
+    response = client.chat.completions.create(
+        model="gpt-4o",
+        messages=[{"role": "user", "content": prompt}],
+        temperature=0.5,
+    )
+    return response.choices[0].message.content
 
-# ✅ 10. 확인
-print("Train 분포:\n", train_df["label"].value_counts())
-print("Valid 분포:\n", valid_df["label"].value_counts())
+# ✅ 7. 응답 클린업
+def clean_response(raw_output):
+    match = re.search(r"{.*}", raw_output, re.DOTALL)
+    if match:
+        return match.group(0)
+    return raw_output
+
+# ✅ 8. 분석 실행
+batch_size = 10
+batch_data = []
+
+for i, comment in enumerate(tqdm(df['Message'])):
+    batch_idx = i // batch_size
+    batch_path = backup_dir / f"{stock_name}_label_{batch_idx}.csv"
+
+    if batch_path.exists():
+        continue
+
+    try:
+        output = get_emotion_scores(comment)
+        cleaned = clean_response(output)
+        print(f"[{i}] GPT 응답:", cleaned)
+
+        parsed = json.loads(cleaned) if isinstance(cleaned, str) else {}
+        row = {
+            "Message": comment,
+            "irrelevant_score": parsed.get("irrelevant_score", None),
+            "fear_score": parsed.get("fear_score", None),
+            "greed_score": parsed.get("greed_score", None)
+        }
+    except Exception as e:
+        print(f"[{i}] 오류 발생: {e}")
+        row = {
+            "Message": comment,
+            "fear_score": None,
+            "greed_score": None,
+            "irrelevant_score": None,
+        }
+
+    batch_data.append(row)
+
+    if (i + 1) % batch_size == 0 or (i + 1) == len(df):
+        df_batch = pd.DataFrame(batch_data)
+        df_batch.to_csv(batch_path, index=False, encoding="utf-8-sig")
+        print(f">>> 저장됨: {batch_path}")
+        batch_data = []
+
+# ✅ 9. 최종 병합 및 저장
+partial_files = sorted(backup_dir.glob(f"{stock_name}_label_*.csv"))
+merged_df = pd.concat([pd.read_csv(f) for f in partial_files], ignore_index=True)
+final_path = output_dir / f"{stock_name}_label_2000.csv"
+merged_df.to_csv(final_path, index=False, encoding="utf-8-sig")
+print(f"[✔] 최종 저장 완료: {final_path}")

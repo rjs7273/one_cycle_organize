@@ -29,6 +29,8 @@ TRAIN_BATCH_SIZE = 64
 INFER_BATCH_SIZE = 1024
 PSEUDO_SAVE_BATCH = 1024
 IRRELEVANT_SCORE_THRESHOLD = 1.1 # 모든 댓글 필터링 안함
+MAX_EPOCH = 13  # ✅ 학습 에포크 수를 직접 설정
+TRAINING_EPOCH = 8
 
 # ================================
 # 경로 설정
@@ -93,7 +95,10 @@ class KcBERTSentiment(nn.Module):
 # Threshold 스케줄
 # ================================
 def get_threshold(epoch):
-    return [1.0, 0.9, 0.7, 0.6, 0.5][min(epoch, 4)]
+    # inference가 시작되는 epoch = TRAINING_EPOCH
+    thresholds = [0.9, 0.7, 0.6, 0.5]
+    return thresholds[min(epoch - TRAINING_EPOCH, len(thresholds) - 1)]
+
 
 # ================================
 # 학습 함수
@@ -220,7 +225,7 @@ def main():
 
     optimizer = AdamW(model.parameters(), lr=2e-5)
 
-    for epoch in range(latest_epoch, 10):
+    for epoch in range(latest_epoch, MAX_EPOCH):
         print(f"\n🌀 Epoch {epoch+1}")
         labeled_dataset = SentimentDataset(labeled_texts, labeled_labels, tokenizer)
         labeled_loader = DataLoader(
@@ -235,38 +240,41 @@ def main():
         print(f"Train loss: {loss:.4f}")
 
         save_path = model_dir / f"kcbert_epoch_{stock_name}_{epoch+1}.pt"
-        torch.save(model.state_dict(), save_path)  # float 상태로 저장
+        torch.save(model.state_dict(), save_path)
         print(f"📦 저장 완료: {save_path}")
 
-        threshold = get_threshold(epoch)
-        print(f"🔍 threshold = {threshold}")
-        full_dataset = SentimentDataset(full_df["Message"].tolist(), tokenizer=tokenizer)
-        batch_data = inference(model, tokenizer, full_dataset, threshold, device, batch_size=INFER_BATCH_SIZE)
+        # ✅ TRAINING_EPOCH번째 epoch부터 inference 수행
+        if epoch >= TRAINING_EPOCH:
+            threshold = get_threshold(epoch)
+            print(f"🔍 threshold = {threshold}")
+            full_dataset = SentimentDataset(full_df["Message"].tolist(), tokenizer=tokenizer)
+            batch_data = inference(model, tokenizer, full_dataset, threshold, device, batch_size=INFER_BATCH_SIZE)
 
-        while len(batch_data) >= PSEUDO_SAVE_BATCH:
-            save_idx = len(list(pseudo_dir.glob("pseudo_batch_*.csv")))
-            save_path = pseudo_dir / f"pseudo_batch_{save_idx}.csv"
-            if not save_path.exists():
-                df_batch = pd.DataFrame(batch_data[:PSEUDO_SAVE_BATCH])
-                df_batch.to_csv(save_path, index=False, encoding="utf-8-sig")
-                print(f"✅ 저장됨: {save_path.name}")
-            batch_data = batch_data[PSEUDO_SAVE_BATCH:]
+            while len(batch_data) >= PSEUDO_SAVE_BATCH:
+                save_idx = len(list(pseudo_dir.glob("pseudo_batch_*.csv")))
+                save_path = pseudo_dir / f"pseudo_batch_{save_idx}.csv"
+                if not save_path.exists():
+                    df_batch = pd.DataFrame(batch_data[:PSEUDO_SAVE_BATCH])
+                    df_batch.to_csv(save_path, index=False, encoding="utf-8-sig")
+                    print(f"✅ 저장됨: {save_path.name}")
+                batch_data = batch_data[PSEUDO_SAVE_BATCH:]
 
-        pseudo_files = sorted(pseudo_dir.glob("pseudo_batch_*.csv"))
-        labeled_texts = labeled_df["Message"].tolist()
-        labeled_labels = labeled_df[["fear_score", "greed_score"]].values.tolist()
-        for file in pseudo_files:
-            df = pd.read_csv(file)
-            labeled_texts += df["text"].tolist()
-            labeled_labels += df[["fear", "greed"]].values.tolist()
+            pseudo_files = sorted(pseudo_dir.glob("pseudo_batch_*.csv"))
+            labeled_texts = labeled_df["Message"].tolist()
+            labeled_labels = labeled_df[["fear_score", "greed_score"]].values.tolist()
+            for file in pseudo_files:
+                df = pd.read_csv(file)
+                labeled_texts += df["text"].tolist()
+                labeled_labels += df[["fear", "greed"]].values.tolist()
 
-        cleaned = [
-            (text, label)
-            for text, label in zip(labeled_texts, labeled_labels)
-            if isinstance(text, str) and text.strip() != "" and not any(pd.isna(label))
-        ]
-        labeled_texts = [x[0] for x in cleaned]
-        labeled_labels = [x[1] for x in cleaned]
+            cleaned = [
+                (text, label)
+                for text, label in zip(labeled_texts, labeled_labels)
+                if isinstance(text, str) and text.strip() != "" and not any(pd.isna(label))
+            ]
+            labeled_texts = [x[0] for x in cleaned]
+            labeled_labels = [x[1] for x in cleaned]
+
 
 if __name__ == "__main__":
     main()

@@ -108,7 +108,9 @@ def run_inference():
 
     df = df.dropna(subset=["Message"])
     texts = df["Message"].tolist()
-    irrelevant_scores = df["irrelevant_score"].tolist()  # ✅ 추가
+    irrelevant_scores = df["irrelevant_score"].tolist()
+    dates = df["Updated At"].tolist()  # ✅ 날짜 컬럼 추가
+
 
     tokenizer = AutoTokenizer.from_pretrained("beomi/kcbert-base")
     dataset = SentimentDataset(texts, tokenizer)
@@ -137,7 +139,8 @@ def run_inference():
                     "text": batch["raw_text"][i],
                     "fear": p[0],
                     "greed": p[1],
-                    "irrelevant_score": irrelevant_scores[idx]  # ✅ 추가
+                    "irrelevant_score": irrelevant_scores[idx],
+                    "Updated At": dates[idx]  
                 })
                 idx += 1
 

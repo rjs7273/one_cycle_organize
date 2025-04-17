@@ -100,6 +100,7 @@ def run_inference():
     df = pd.read_csv(preprocessed_path)
     df = df.dropna(subset=["Message"])
     texts = df["Message"].tolist()
+    dates = df["Updated At"].tolist()  # ✅ 날짜 컬럼 추가
 
     tokenizer = AutoTokenizer.from_pretrained("beomi/kcbert-base")
     dataset = SentimentDataset(texts, tokenizer)
@@ -117,6 +118,7 @@ def run_inference():
     model = copy.deepcopy(model).half().eval()  # ✅ half precision for inference
 
     results = []
+    idx = 0  # ✅ index 추적
     with torch.no_grad():
         for batch in tqdm(dataloader, desc="Inference", ncols=100):
             input_ids = batch["input_ids"].to(device)
@@ -126,12 +128,15 @@ def run_inference():
             for i, score in enumerate(scores):
                 results.append({
                     "Message": batch["raw_text"][i],
-                    "irrelevant_score": float(score)
+                    "irrelevant_score": float(score),
+                    "Updated At": dates[idx]  # ✅ 날짜 추가
                 })
+                idx += 1
 
     result_df = pd.DataFrame(results)
     result_df.to_csv(out_path, index=False, encoding="utf-8-sig")
     print(f"✅ 추론 결과 저장 완료: {out_path}")
+
 
 if __name__ == "__main__":
     run_inference()
