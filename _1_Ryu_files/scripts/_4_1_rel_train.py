@@ -92,7 +92,7 @@ class KcBERTSentiment(nn.Module):
 # Threshold 스케줄
 # ================================
 def get_threshold(epoch):
-    return [0.2, 0.3, 0.4, 0.6, 0.8, 1.0][min(epoch, 5)]  # ✅ 수정됨
+    return [0.2, 0.3, 0.4, 0.6, 0.8, 1.0][min(epoch, 5)]
 
 # ================================
 # 학습 함수

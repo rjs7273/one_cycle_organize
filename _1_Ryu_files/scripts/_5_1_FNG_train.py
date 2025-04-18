@@ -28,9 +28,9 @@ stock_name = args.stock_name.lower()
 TRAIN_BATCH_SIZE = 64
 INFER_BATCH_SIZE = 1024
 PSEUDO_SAVE_BATCH = 1024
-IRRELEVANT_SCORE_THRESHOLD = 1.1 # 모든 댓글 필터링 안함
-TOTAL_EPOCH = 13
-TRUE_LABEL_EPOCH = 8
+IRRELEVANT_SCORE_THRESHOLD = 0.4 # 이상치 0.4 이상 댓글 필터링
+TRUE_LABEL_EPOCH = 8 # GPT 레이블 데이터 Epoch
+PSUEDO_LABEL_EPOCH = 5 # psuedo_label 포함 Epoch 5번
 
 # ================================
 # 경로 설정
@@ -228,7 +228,7 @@ def main():
 
     optimizer = AdamW(model.parameters(), lr=2e-5)
 
-    for epoch in range(latest_epoch, TOTAL_EPOCH):
+    for epoch in range(latest_epoch, TRUE_LABEL_EPOCH + PSUEDO_LABEL_EPOCH):
         print(f"\n🌀 Epoch {epoch+1}")
         labeled_dataset = SentimentDataset(labeled_texts, labeled_labels, tokenizer)
         labeled_loader = DataLoader(
