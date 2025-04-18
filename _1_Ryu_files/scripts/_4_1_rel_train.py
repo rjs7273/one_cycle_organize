@@ -80,7 +80,10 @@ class KcBERTSentiment(nn.Module):
         self.activation = nn.Sigmoid()
 
     def forward(self, input_ids, attention_mask):
-        outputs = self.bert(input_ids=input_ids, attention_mask=attention_mask).last_hidden_state
+        outputs = self.bert(
+            input_ids=input_ids, 
+            attention_mask=attention_mask
+        ).last_hidden_state
         pooled = outputs[:, 0]
         logits = self.linear(self.dropout(pooled))
         return self.activation(logits).squeeze(-1)

@@ -29,8 +29,8 @@ TRAIN_BATCH_SIZE = 64
 INFER_BATCH_SIZE = 1024
 PSEUDO_SAVE_BATCH = 1024
 IRRELEVANT_SCORE_THRESHOLD = 1.1 # 모든 댓글 필터링 안함
-MAX_EPOCH = 13  # ✅ 학습 에포크 수를 직접 설정
-TRAINING_EPOCH = 8
+TOTAL_EPOCH = 13
+TRUE_LABEL_EPOCH = 8
 
 # ================================
 # 경로 설정
@@ -85,7 +85,10 @@ class KcBERTSentiment(nn.Module):
         self.softmax = nn.Softmax(dim=1)
 
     def forward(self, input_ids, attention_mask):
-        outputs = self.bert(input_ids=input_ids, attention_mask=attention_mask).last_hidden_state
+        outputs = self.bert(
+            input_ids=input_ids, 
+            attention_mask=attention_mask
+        ).last_hidden_state
         pooled = outputs[:, 0]
         logits = self.linear(self.dropout(pooled))
         probs = self.softmax(logits)
@@ -95,9 +98,9 @@ class KcBERTSentiment(nn.Module):
 # Threshold 스케줄
 # ================================
 def get_threshold(epoch):
-    # inference가 시작되는 epoch = TRAINING_EPOCH
+    # inference가 시작되는 epoch = TRUE_LABEL_EPOCH
     thresholds = [0.9, 0.7, 0.6, 0.5]
-    return thresholds[min(epoch - TRAINING_EPOCH, len(thresholds) - 1)]
+    return thresholds[min(epoch - TRUE_LABEL_EPOCH, len(thresholds) - 1)]
 
 
 # ================================
@@ -225,7 +228,7 @@ def main():
 
     optimizer = AdamW(model.parameters(), lr=2e-5)
 
-    for epoch in range(latest_epoch, MAX_EPOCH):
+    for epoch in range(latest_epoch, TOTAL_EPOCH):
         print(f"\n🌀 Epoch {epoch+1}")
         labeled_dataset = SentimentDataset(labeled_texts, labeled_labels, tokenizer)
         labeled_loader = DataLoader(
@@ -243,8 +246,8 @@ def main():
         torch.save(model.state_dict(), save_path)
         print(f"📦 저장 완료: {save_path}")
 
-        # ✅ TRAINING_EPOCH번째 epoch부터 inference 수행
-        if epoch >= TRAINING_EPOCH:
+        # ✅ TRUE_LABEL_EPOCH번째 epoch부터 inference 수행
+        if epoch >= TRUE_LABEL_EPOCH:
             threshold = get_threshold(epoch)
             print(f"🔍 threshold = {threshold}")
             full_dataset = SentimentDataset(full_df["Message"].tolist(), tokenizer=tokenizer)
