@@ -34,7 +34,7 @@ out_path = data_dir / f"_4_predicted/{stock_name}_FNG_predicted.csv"
 # 하이퍼파라미터
 # ================================
 INFER_BATCH_SIZE = 1024
-IRRELEVANT_SCORE_THRESHOLD = 1.1  # 일단 모든 댓글 수용
+IRRELEVANT_SCORE_THRESHOLD = 0.4
 
 # ================================
 # 데이터셋 정의

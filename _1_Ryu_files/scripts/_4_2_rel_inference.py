@@ -118,12 +118,12 @@ def run_inference():
     print(f"✅ 모델 로드: {model_path}")
 
     model.load_state_dict(torch.load(model_path, map_location=device))
-    model = copy.deepcopy(model).half().eval()  # ✅ half precision for inference
+    model = copy.deepcopy(model).half().eval()
 
     results = []
     idx = 0  # ✅ index 추적
     with torch.no_grad():
-        for batch in tqdm(dataloader, desc="Inference", ncols=100):
+        for batch in tqdm(dataloader, desc="Inference", ncols=100, leave=False, dynamic_ncols=True):
             input_ids = batch["input_ids"].to(device)
             attention_mask = batch["attention_mask"].to(device).half()
             outputs = model(input_ids, attention_mask)  # shape: (batch,)
@@ -132,7 +132,7 @@ def run_inference():
                 results.append({
                     "Message": batch["raw_text"][i],
                     "irrelevant_score": float(score),
-                    "Updated At": dates[idx]  # ✅ 날짜 추가
+                    "Updated At": dates[idx]
                 })
                 idx += 1
 

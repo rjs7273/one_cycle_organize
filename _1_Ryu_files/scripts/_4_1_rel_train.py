@@ -27,6 +27,8 @@ stock_name = args.stock_name.lower()
 TRAIN_BATCH_SIZE = 64
 INFER_BATCH_SIZE = 1024
 PSEUDO_SAVE_BATCH = 1024
+TRUE_LABEL_EPOCH = 2 # GPT 레이블 데이터 Epoch. Only train
+PSEUDO_LABEL_EPOCH = 2 # PSEUDO_label 포함 Epoch. train + inference
 
 # ================================
 # 경로 설정
@@ -84,7 +86,7 @@ class KcBERTSentiment(nn.Module):
             input_ids=input_ids, 
             attention_mask=attention_mask
         ).last_hidden_state
-        pooled = outputs[:, 0]
+        pooled = outputs[:, 0] # [CLS] 토큰 Pooling
         logits = self.linear(self.dropout(pooled))
         return self.activation(logits).squeeze(-1)
 
@@ -92,8 +94,8 @@ class KcBERTSentiment(nn.Module):
 # Threshold 스케줄
 # ================================
 def get_threshold(epoch):
-    return [0.2, 0.3, 0.4, 0.6, 0.8, 1.0][min(epoch, 5)]
-
+    thresholds = [0.2, 0.3, 0.4, 0.6, 0.8, 1.0]
+    return thresholds[min(epoch - TRUE_LABEL_EPOCH, len(thresholds) - 1)]
 # ================================
 # 학습 함수
 # ================================
@@ -104,7 +106,7 @@ def train(model, dataloader, optimizer, device):
     loss_fn = nn.MSELoss()
     total_loss = 0
 
-    for batch in tqdm(dataloader, desc="Training", ncols=100, leave=True):
+    for batch in tqdm(dataloader, desc="Training", ncols=100, leave=False, dynamic_ncols=False):
         input_ids = batch["input_ids"].to(device)
         attention_mask = batch["attention_mask"].to(device)
         labels = batch["labels"].squeeze(1).to(device)
@@ -137,7 +139,7 @@ def inference(model, tokenizer, dataset, threshold, device, batch_size=INFER_BAT
     confident_data = []
     model_fp16 = copy.deepcopy(model).half().eval()
     with torch.no_grad():
-        for batch in tqdm(dataloader, desc=" Inference", ncols=100):
+        for batch in tqdm(dataloader, desc=" Inference", ncols=100, leave=False, dynamic_ncols=False):
             input_ids = batch["input_ids"].to(device)
             attention_mask = batch["attention_mask"].to(device).half()
             outputs = model_fp16(input_ids, attention_mask)
@@ -171,40 +173,51 @@ def find_latest_model(model_dir):
 # 전체 파이프라인 실행
 # ================================
 def main():
+    # 라벨 데이터와 전체 데이터 불러오기
     labeled_df = pd.read_csv(labeled_path)
     full_df = pd.read_csv(preprocessed_path)
 
+    # 필요한 컬럼이 비어있는 행 제거
     labeled_df = labeled_df.dropna(subset=["Message", "irrelevant_score"])
     full_df = full_df.dropna(subset=["Message"])
 
+    # 토크나이저와 디바이스 설정
     tokenizer = AutoTokenizer.from_pretrained("beomi/kcbert-base")
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"현재 사용 중인 디바이스: {device}")
 
+    # 모델 초기화 및 가장 최근 모델 불러오기
     model = KcBERTSentiment().to(device)
     latest_model_path, latest_epoch = find_latest_model(model_dir)
     if latest_model_path:
         model.load_state_dict(torch.load(latest_model_path, map_location=device))
         model = model.to(device).float()
-        print(f"✅ 가장 최근 모델 로드: {latest_model_path} (epoch {latest_epoch})")
+        print(f"가장 최근 모델 로드: {latest_model_path} (epoch {latest_epoch})")
     else:
         latest_epoch = 0
-        print("🚀 새 모델로 학습 시작합니다.")
+        print("새 모델로 학습 시작")
 
-    labeled_texts = labeled_df["Message"].tolist()
-    labeled_labels = labeled_df["irrelevant_score"].tolist()
-
-    pseudo_files = sorted(pseudo_dir.glob("pseudo_batch_*.csv"))
-    for file in pseudo_files:
-        df = pd.read_csv(file)
-        df = df.dropna(subset=["text", "irrelevant_score"])
-        labeled_texts += df["text"].tolist()
-        labeled_labels += df["irrelevant_score"].tolist()
-
+    # 옵티마이저 설정
     optimizer = AdamW(model.parameters(), lr=2e-5)
 
-    for epoch in range(latest_epoch, 10):
-        print(f"\n🌀 Epoch {epoch+1}")
+    # 학습 루프
+    for epoch in range(latest_epoch, TRUE_LABEL_EPOCH + PSEUDO_LABEL_EPOCH):
+        print(f"\nEpoch {epoch+1}")
+
+        # 라벨 텍스트와 점수 리스트 생성
+        labeled_texts = labeled_df["Message"].tolist()
+        labeled_labels = labeled_df["irrelevant_score"].tolist()
+
+        # 기존 pseudo-label 데이터 병합
+        if epoch >= TRUE_LABEL_EPOCH:
+            pseudo_files = sorted(pseudo_dir.glob("pseudo_batch_*.csv"))
+            for file in pseudo_files:
+                df = pd.read_csv(file)
+                df = df.dropna(subset=["text", "irrelevant_score"])
+                labeled_texts += df["text"].tolist()
+                labeled_labels += df["irrelevant_score"].tolist()
+        
+        # 데이터셋 및 데이터로더 준비
         labeled_dataset = SentimentDataset(labeled_texts, labeled_labels, tokenizer)
         labeled_loader = DataLoader(
             labeled_dataset,
@@ -214,42 +227,33 @@ def main():
             pin_memory=True,
             persistent_workers=True
         )
+
+        # 모델 학습
         loss = train(model, labeled_loader, optimizer, device)
         print(f"Train loss: {loss:.4f}")
 
+        # 모델 저장
         save_path = model_dir / f"kcbert_epoch_{stock_name}_{epoch+1}.pt"
         torch.save(model.state_dict(), save_path)
-        print(f"📦 저장 완료: {save_path}")
+        print(f"모델 저장 완료: {save_path}")
 
-        threshold = get_threshold(epoch)
-        print(f"🔍 threshold = {threshold}")
-        full_dataset = SentimentDataset(full_df["Message"].tolist(), tokenizer=tokenizer)
-        batch_data = inference(model, tokenizer, full_dataset, threshold, device, batch_size=INFER_BATCH_SIZE)
+        # 일정 에포크 이후부터 pseudo-labeling 수행
+        if epoch >= TRUE_LABEL_EPOCH:
+            threshold = get_threshold(epoch)
+            print(f"threshold = {threshold}")
 
-        while len(batch_data) >= PSEUDO_SAVE_BATCH:
-            save_idx = len(list(pseudo_dir.glob("pseudo_batch_*.csv")))
-            save_path = pseudo_dir / f"pseudo_batch_{save_idx}.csv"
-            if not save_path.exists():
+            # 전체 데이터에 대해 추론
+            full_dataset = SentimentDataset(full_df["Message"].tolist(), tokenizer=tokenizer)
+            batch_data = inference(model, tokenizer, full_dataset, threshold, device, batch_size=INFER_BATCH_SIZE)
+
+            # 일정 개수 이상이면 파일로 저장
+            while len(batch_data) >= PSEUDO_SAVE_BATCH:
+                save_idx = len(list(pseudo_dir.glob("pseudo_batch_*.csv")))
+                save_path = pseudo_dir / f"pseudo_batch_{save_idx}.csv"
                 df_batch = pd.DataFrame(batch_data[:PSEUDO_SAVE_BATCH])
                 df_batch.to_csv(save_path, index=False, encoding="utf-8-sig")
-                print(f"✅ 저장됨: {save_path.name}")
-            batch_data = batch_data[PSEUDO_SAVE_BATCH:]
-
-        pseudo_files = sorted(pseudo_dir.glob("pseudo_batch_*.csv"))
-        labeled_texts = labeled_df["Message"].tolist()
-        labeled_labels = labeled_df["irrelevant_score"].tolist()
-        for file in pseudo_files:
-            df = pd.read_csv(file)
-            labeled_texts += df["text"].tolist()
-            labeled_labels += df["irrelevant_score"].tolist()
-
-        cleaned = [
-            (text, label)
-            for text, label in zip(labeled_texts, labeled_labels)
-            if isinstance(text, str) and text.strip() != "" and not pd.isna(label)
-        ]
-        labeled_texts = [x[0] for x in cleaned]
-        labeled_labels = [x[1] for x in cleaned]
+                print(f"저장됨: {save_path.name}")
+                batch_data = batch_data[PSEUDO_SAVE_BATCH:]
 
 if __name__ == "__main__":
     main()
