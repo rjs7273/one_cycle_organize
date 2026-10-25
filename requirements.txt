@@ -37,7 +37,7 @@ numpy==2.2.4
 openai==1.69.0
 packaging==24.2
 pandas==2.2.3
-pillow==11.1.0
+pillow==13.0.0
 propcache==0.3.1
 psutil==7.0.0
 pyarrow==19.0.1
